@@ -1,0 +1,287 @@
+//@version=5
+strategy("AI Trading Bot - 19 Modules", overlay=true, 
+         initial_capital=10000, 
+         default_qty_type=strategy.percent_of_equity, 
+         default_qty_value=2,
+         commission_type=strategy.commission.percent, 
+         commission_value=0.1)
+
+// ============================================================================
+// AI TRADING BOT - TRADINGVIEW STRATEGY
+// Ket hop voi Python 19 AI Modules qua Webhook
+// ============================================================================
+
+// ==================== INPUTS ====================
+
+// Webhook Settings
+webhook_url = input.string("http://your-server:5000/webhook", "Webhook URL", 
+                           tooltip="URL cua Python server (localhost hoac VPS)")
+
+// Strategy Parameters
+use_webhook = input.bool(true, "Use Webhook", group="Strategy")
+confidence_threshold = input.int(75, "Min Confidence %", minval=50, maxval=100, group="Strategy")
+
+// MACD Settings
+macd_fast = input.int(12, "MACD Fast", group="MACD")
+macd_slow = input.int(26, "MACD Slow", group="MACD")
+macd_signal = input.int(9, "MACD Signal", group="MACD")
+
+// EMA Settings
+ema_fast = input.int(20, "EMA Fast", group="Moving Averages")
+ema_slow = input.int(50, "EMA Slow", group="Moving Averages")
+ema_trend = input.int(200, "EMA Trend", group="Moving Averages")
+
+// RSI Settings
+rsi_period = input.int(14, "RSI Period", group="RSI")
+rsi_overbought = input.int(70, "RSI Overbought", group="RSI")
+rsi_oversold = input.int(30, "RSI Oversold", group="RSI")
+
+// ATR Settings (for SL/TP)
+atr_period = input.int(14, "ATR Period", group="Risk Management")
+atr_sl_multiplier = input.float(2.0, "ATR SL Multiplier", group="Risk Management")
+atr_tp_multiplier = input.float(3.0, "ATR TP Multiplier", group="Risk Management")
+
+// ==================== INDICATORS ====================
+
+// MACD
+[macd_line, signal_line, macd_hist] = ta.macd(close, macd_fast, macd_slow, macd_signal)
+macd_bullish = macd_line > signal_line
+macd_bearish = macd_line < signal_line
+macd_cross_up = ta.crossover(macd_line, signal_line)
+macd_cross_down = ta.crossunder(macd_line, signal_line)
+
+// EMAs
+ema20 = ta.ema(close, ema_fast)
+ema50 = ta.ema(close, ema_slow)
+ema200 = ta.ema(close, ema_trend)
+
+ema_bullish = ema20 > ema50 and ema50 > ema200
+ema_bearish = ema20 < ema50 and ema50 < ema200
+
+// RSI
+rsi = ta.rsi(close, rsi_period)
+rsi_bull = rsi < rsi_overbought and rsi > 50
+rsi_bear = rsi > rsi_oversold and rsi < 50
+
+// ATR
+atr = ta.atr(atr_period)
+
+// Volume
+vol_ma = ta.sma(volume, 20)
+high_volume = volume > vol_ma * 1.2
+
+// ==================== SMART MONEY CONCEPTS (SMC) ====================
+
+// Market Structure
+var float last_high = na
+var float last_low = na
+var bool higher_high = false
+var bool lower_low = false
+
+if high > high[1]
+    last_high := high
+    higher_high := true
+else
+    higher_high := false
+
+if low < low[1]
+    last_low := low
+    lower_low := true
+else
+    lower_low := false
+
+// Break of Structure (BOS)
+bos_bullish = close > last_high and higher_high
+bos_bearish = close < last_low and lower_low
+
+// Order Blocks (Simplified)
+// Bullish OB: Strong green candle after red candle
+bullish_ob = close[1] < open[1] and close > open and (close - open) > (high - low) * 0.7
+
+// Bearish OB: Strong red candle after green candle  
+bearish_ob = close[1] > open[1] and close < open and (open - close) > (high - low) * 0.7
+
+// Fair Value Gap (FVG)
+// Bullish FVG: Gap between candle[2] high and current low
+bullish_fvg = low > high[2] and close > open
+
+// Bearish FVG: Gap between candle[2] low and current high
+bearish_fvg = high < low[2] and close < open
+
+// Liquidity Sweep
+// Price sweeps recent high/low then reverses
+var float recent_high = na
+var float recent_low = na
+lookback = 20
+
+recent_high := ta.highest(high, lookback)
+recent_low := ta.lowest(low, lookback)
+
+liquidity_sweep_high = high >= recent_high and close < open
+liquidity_sweep_low = low <= recent_low and close > open
+
+// ==================== SIGNAL GENERATION ====================
+
+// BUY CONDITIONS
+buy_signal = false
+buy_score = 0
+
+// Condition 1: MACD bullish (25%)
+if macd_cross_up or macd_bullish
+    buy_score += 25
+
+// Condition 2: EMA alignment (20%)
+if ema_bullish or close > ema20
+    buy_score += 20
+
+// Condition 3: RSI favorable (15%)
+if rsi_bull
+    buy_score += 15
+
+// Condition 4: SMC bullish (25%)
+if bos_bullish or bullish_ob or bullish_fvg or liquidity_sweep_low
+    buy_score += 25
+
+// Condition 5: Volume confirmation (15%)
+if high_volume
+    buy_score += 15
+
+buy_signal := buy_score >= confidence_threshold
+
+// SELL CONDITIONS
+sell_signal = false
+sell_score = 0
+
+// Condition 1: MACD bearish (25%)
+if macd_cross_down or macd_bearish
+    sell_score += 25
+
+// Condition 2: EMA alignment (20%)
+if ema_bearish or close < ema20
+    sell_score += 20
+
+// Condition 3: RSI favorable (15%)
+if rsi_bear
+    sell_score += 15
+
+// Condition 4: SMC bearish (25%)
+if bos_bearish or bearish_ob or bearish_fvg or liquidity_sweep_high
+    sell_score += 25
+
+// Condition 5: Volume confirmation (15%)
+if high_volume
+    sell_score += 15
+
+sell_signal := sell_score >= confidence_threshold
+
+// ==================== RISK MANAGEMENT ====================
+
+// Calculate SL/TP based on ATR
+long_sl = close - (atr * atr_sl_multiplier)
+long_tp = close + (atr * atr_tp_multiplier)
+
+short_sl = close + (atr * atr_sl_multiplier)
+short_tp = close - (atr * atr_tp_multiplier)
+
+// ==================== STRATEGY EXECUTION ====================
+
+// BUY
+if buy_signal and strategy.position_size == 0
+    strategy.entry("BUY", strategy.long)
+    strategy.exit("BUY TP/SL", "BUY", stop=long_sl, limit=long_tp)
+    
+    // Send webhook
+    if use_webhook
+        alert('{"action":"BUY","price":' + str.tostring(close) + ',"symbol":"' + syminfo.ticker + '","timeframe":"' + timeframe.period + '","score":' + str.tostring(buy_score) + ',"sl":' + str.tostring(long_sl) + ',"tp":' + str.tostring(long_tp) + ',"atr":' + str.tostring(atr) + ',"comment":"AI Bot BUY"}', alert.freq_once_per_bar)
+
+// SELL
+if sell_signal and strategy.position_size == 0
+    strategy.entry("SELL", strategy.short)
+    strategy.exit("SELL TP/SL", "SELL", stop=short_sl, limit=short_tp)
+    
+    // Send webhook
+    if use_webhook
+        alert('{"action":"SELL","price":' + str.tostring(close) + ',"symbol":"' + syminfo.ticker + '","timeframe":"' + timeframe.period + '","score":' + str.tostring(sell_score) + ',"sl":' + str.tostring(short_sl) + ',"tp":' + str.tostring(short_tp) + ',"atr":' + str.tostring(atr) + ',"comment":"AI Bot SELL"}', alert.freq_once_per_bar)
+
+// ==================== VISUALIZATION ====================
+
+// Plot EMAs
+plot(ema20, "EMA 20", color=color.blue, linewidth=2)
+plot(ema50, "EMA 50", color=color.orange, linewidth=2)
+plot(ema200, "EMA 200", color=color.red, linewidth=2)
+
+// Plot buy/sell signals
+plotshape(buy_signal, "BUY", shape.triangleup, location.belowbar, 
+          color.new(color.green, 0), size=size.small)
+plotshape(sell_signal, "SELL", shape.triangledown, location.abovebar, 
+          color.new(color.red, 0), size=size.small)
+
+// Plot Order Blocks
+bgcolor(bullish_ob ? color.new(color.green, 90) : na, title="Bullish OB")
+bgcolor(bearish_ob ? color.new(color.red, 90) : na, title="Bearish OB")
+
+// Plot FVG
+bgcolor(bullish_fvg ? color.new(color.blue, 95) : na, title="Bullish FVG")
+bgcolor(bearish_fvg ? color.new(color.orange, 95) : na, title="Bearish FVG")
+
+// Plot Score on chart
+var label score_label = na
+if bar_index == last_bar_index - 1
+    if buy_signal
+        score_label := label.new(bar_index, high, "BUY\nScore: " + str.tostring(buy_score) + "%", 
+                                 color=color.green, textcolor=color.white, 
+                                 style=label.style_label_down, size=size.normal)
+    if sell_signal
+        score_label := label.new(bar_index, low, "SELL\nScore: " + str.tostring(sell_score) + "%", 
+                                 color=color.red, textcolor=color.white, 
+                                 style=label.style_label_up, size=size.normal)
+
+// ==================== PANEL INFO ====================
+
+var table info_table = table.new(position.top_right, 2, 8, 
+                                 bgcolor=color.new(color.black, 80),
+                                 border_width=1,
+                                 border_color=color.gray)
+
+if barstate.islast
+    // Header
+    table.cell(info_table, 0, 0, "AI Bot Status", bgcolor=color.new(color.blue, 70), 
+               text_color=color.white, text_size=size.normal)
+    table.cell(info_table, 1, 0, "Value", bgcolor=color.new(color.blue, 70), 
+               text_color=color.white, text_size=size.normal)
+    
+    // Signal
+    signal_text = buy_signal ? "BUY" : sell_signal ? "SELL" : "WAIT"
+    signal_color = buy_signal ? color.green : sell_signal ? color.red : color.gray
+    table.cell(info_table, 0, 1, "Signal", text_color=color.white)
+    table.cell(info_table, 1, 1, signal_text, text_color=signal_color)
+    
+    // Score
+    current_score = buy_signal ? buy_score : sell_signal ? sell_score : 0
+    table.cell(info_table, 0, 2, "Score", text_color=color.white)
+    table.cell(info_table, 1, 2, str.tostring(current_score) + "%", text_color=color.white)
+    
+    // MACD
+    macd_status = macd_bullish ? "BULL" : "BEAR"
+    table.cell(info_table, 0, 3, "MACD", text_color=color.white)
+    table.cell(info_table, 1, 3, macd_status, 
+               text_color=macd_bullish ? color.green : color.red)
+    
+    // RSI
+    table.cell(info_table, 0, 4, "RSI", text_color=color.white)
+    table.cell(info_table, 1, 4, str.tostring(math.round(rsi)), 
+               text_color=rsi > 70 ? color.red : rsi < 30 ? color.green : color.yellow)
+    
+    // Trend
+    trend_text = ema_bullish ? "UP" : ema_bearish ? "DOWN" : "RANGE"
+    table.cell(info_table, 0, 5, "Trend", text_color=color.white)
+    table.cell(info_table, 1, 5, trend_text, 
+               text_color=ema_bullish ? color.green : ema_bearish ? color.red : color.yellow)
+    
+    // ATR
+    table.cell(info_table, 0, 6, "ATR", text_color=color.white)
+    table.cell(info_table, 1, 6, str.tostring(math.round(atr, 2)), text_color=color.white)
+    
+    // Price
+    table.cell(info_table, 0, 7, "Price", text_color=color.white)
+    table.cell(info_table, 1, 7, str.tostring(close), text_color=color.white)

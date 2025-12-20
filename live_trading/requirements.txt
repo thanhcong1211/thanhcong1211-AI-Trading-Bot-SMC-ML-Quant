@@ -1,0 +1,19 @@
+# Python Dependencies for AI Trading Bot
+# Install: pip install -r requirements.txt
+
+# Core
+pandas>=2.0.0
+numpy>=1.24.0
+scikit-learn>=1.3.0
+
+# MetaTrader 5
+MetaTrader5>=5.0.45
+
+# Machine Learning
+xgboost>=2.0.0
+
+# HTTP Server (built-in, no install needed)
+# http.server (Python standard library)
+
+# Optional: Better performance
+joblib>=1.3.0

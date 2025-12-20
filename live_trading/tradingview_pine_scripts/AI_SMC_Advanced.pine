@@ -1,0 +1,291 @@
+//@version=5
+indicator("AI Bot - SMC Advanced", overlay=true)
+
+// ============================================================================
+// SMART MONEY CONCEPTS (SMC) ADVANCED DETECTOR
+// Ket hop voi 19 AI Modules qua webhook
+// ============================================================================
+
+// ==================== INPUTS ====================
+
+// SMC Settings
+show_structure = input.bool(true, "Show Market Structure", group="SMC")
+show_ob = input.bool(true, "Show Order Blocks", group="SMC")
+show_fvg = input.bool(true, "Show Fair Value Gaps", group="SMC")
+show_liquidity = input.bool(true, "Show Liquidity Zones", group="SMC")
+show_breakers = input.bool(true, "Show Breaker Blocks", group="SMC")
+
+ob_lookback = input.int(20, "Order Block Lookback", minval=5, maxval=100, group="SMC")
+liquidity_lookback = input.int(50, "Liquidity Lookback", minval=10, maxval=200, group="SMC")
+
+// ==================== MARKET STRUCTURE ====================
+
+// Swing Highs and Lows
+swing_length = 5
+swing_high = ta.pivothigh(high, swing_length, swing_length)
+swing_low = ta.pivotlow(low, swing_length, swing_length)
+
+var float[] highs = array.new_float(0)
+var float[] lows = array.new_float(0)
+var int[] high_bars = array.new_int(0)
+var int[] low_bars = array.new_int(0)
+
+if not na(swing_high)
+    array.push(highs, swing_high)
+    array.push(high_bars, bar_index - swing_length)
+    if array.size(highs) > 10
+        array.shift(highs)
+        array.shift(high_bars)
+
+if not na(swing_low)
+    array.push(lows, swing_low)
+    array.push(low_bars, bar_index - swing_length)
+    if array.size(lows) > 10
+        array.shift(lows)
+        array.shift(low_bars)
+
+// Determine trend
+var string market_structure = "RANGING"
+if array.size(highs) >= 2 and array.size(lows) >= 2
+    if array.get(highs, array.size(highs)-1) > array.get(highs, array.size(highs)-2) and array.get(lows, array.size(lows)-1) > array.get(lows, array.size(lows)-2)
+        market_structure := "BULLISH (HH+HL)"
+    else if array.get(highs, array.size(highs)-1) < array.get(highs, array.size(highs)-2) and array.get(lows, array.size(lows)-1) < array.get(lows, array.size(lows)-2)
+        market_structure := "BEARISH (LH+LL)"
+
+// ==================== ORDER BLOCKS ====================
+
+// Bullish Order Block: Last down candle before strong up move
+bullish_ob_detected = false
+var float bullish_ob_top = na
+var float bullish_ob_bottom = na
+var int bullish_ob_bar = na
+
+if close[2] < open[2] and close[1] > open[1] and close > open
+    if (close[1] - open[1]) > (high[1] - low[1]) * 0.6
+        bullish_ob_detected := true
+        bullish_ob_top := high[2]
+        bullish_ob_bottom := low[2]
+        bullish_ob_bar := bar_index - 2
+
+// Bearish Order Block: Last up candle before strong down move
+bearish_ob_detected = false
+var float bearish_ob_top = na
+var float bearish_ob_bottom = na
+var int bearish_ob_bar = na
+
+if close[2] > open[2] and close[1] < open[1] and close < open
+    if (open[1] - close[1]) > (high[1] - low[1]) * 0.6
+        bearish_ob_detected := true
+        bearish_ob_top := high[2]
+        bearish_ob_bottom := low[2]
+        bearish_ob_bar := bar_index - 2
+
+// ==================== FAIR VALUE GAPS (FVG) ====================
+
+// Bullish FVG: Gap between candle[2] high and current low
+bullish_fvg = false
+var float bull_fvg_top = na
+var float bull_fvg_bottom = na
+
+if low > high[2] and close > open
+    bullish_fvg := true
+    bull_fvg_top := low
+    bull_fvg_bottom := high[2]
+
+// Bearish FVG: Gap between candle[2] low and current high
+bearish_fvg = false
+var float bear_fvg_top = na
+var float bear_fvg_bottom = na
+
+if high < low[2] and close < open
+    bearish_fvg := true
+    bear_fvg_top := low[2]
+    bear_fvg_bottom := high
+
+// ==================== LIQUIDITY ZONES ====================
+
+// Equal Highs (Sell-side liquidity)
+equal_highs = false
+if array.size(highs) >= 3
+    h1 = array.get(highs, array.size(highs)-1)
+    h2 = array.get(highs, array.size(highs)-2)
+    h3 = array.get(highs, array.size(highs)-3)
+    tolerance = (h1 + h2 + h3) / 3 * 0.002 // 0.2% tolerance
+    equal_highs := math.abs(h1 - h2) < tolerance and math.abs(h2 - h3) < tolerance
+
+// Equal Lows (Buy-side liquidity)
+equal_lows = false
+if array.size(lows) >= 3
+    l1 = array.get(lows, array.size(lows)-1)
+    l2 = array.get(lows, array.size(lows)-2)
+    l3 = array.get(lows, array.size(lows)-3)
+    tolerance = (l1 + l2 + l3) / 3 * 0.002
+    equal_lows := math.abs(l1 - l2) < tolerance and math.abs(l2 - l3) < tolerance
+
+// Liquidity Sweep
+liquidity_sweep_high = false
+liquidity_sweep_low = false
+
+if array.size(highs) >= 1
+    recent_high = ta.highest(high, liquidity_lookback)
+    if high >= recent_high and close < open
+        liquidity_sweep_high := true
+
+if array.size(lows) >= 1
+    recent_low = ta.lowest(low, liquidity_lookback)
+    if low <= recent_low and close > open
+        liquidity_sweep_low := true
+
+// ==================== BREAKER BLOCKS ====================
+
+// Breaker Block: Order Block that failed (price broke through it)
+bullish_breaker = false
+if not na(bearish_ob_bottom) and close > bearish_ob_top
+    bullish_breaker := true // Failed bearish OB = bullish breaker
+
+bearish_breaker = false
+if not na(bullish_ob_top) and close < bullish_ob_bottom
+    bearish_breaker := true // Failed bullish OB = bearish breaker
+
+// ==================== SIGNAL GENERATION ====================
+
+// SMC Score calculation
+smc_score = 0
+smc_max = 6
+
+// Factor 1: Market Structure
+if market_structure == "BULLISH (HH+HL)"
+    smc_score += 1
+else if market_structure == "BEARISH (LH+LL)"
+    smc_score += 1
+
+// Factor 2: Order Block
+if bullish_ob_detected or bearish_ob_detected
+    smc_score += 1
+
+// Factor 3: Fair Value Gap
+if bullish_fvg or bearish_fvg
+    smc_score += 1
+
+// Factor 4: Liquidity
+if equal_highs or equal_lows
+    smc_score += 1
+
+// Factor 5: Liquidity Sweep
+if liquidity_sweep_high or liquidity_sweep_low
+    smc_score += 1
+
+// Factor 6: Breaker Block
+if bullish_breaker or bearish_breaker
+    smc_score += 1
+
+smc_confidence = (smc_score * 100) / smc_max
+
+// BUY Signal
+buy_signal = (liquidity_sweep_low or bullish_breaker or bullish_ob_detected) and 
+             market_structure == "BULLISH (HH+HL)" and 
+             smc_score >= 4
+
+// SELL Signal
+sell_signal = (liquidity_sweep_high or bearish_breaker or bearish_ob_detected) and 
+              market_structure == "BEARISH (LH+LL)" and 
+              smc_score >= 4
+
+// ==================== ALERTS ====================
+
+if buy_signal
+    alert('{"action":"BUY","price":' + str.tostring(close) + ',"symbol":"' + syminfo.ticker + 
+          '","timeframe":"' + timeframe.period + '","smc_score":' + str.tostring(smc_score) + 
+          ',"smc_confidence":' + str.tostring(smc_confidence) + 
+          ',"structure":"' + market_structure + '","comment":"SMC BUY"}', alert.freq_once_per_bar)
+
+if sell_signal
+    alert('{"action":"SELL","price":' + str.tostring(close) + ',"symbol":"' + syminfo.ticker + 
+          '","timeframe":"' + timeframe.period + '","smc_score":' + str.tostring(smc_score) + 
+          ',"smc_confidence":' + str.tostring(smc_confidence) + 
+          ',"structure":"' + market_structure + '","comment":"SMC SELL"}', alert.freq_once_per_bar)
+
+// ==================== VISUALIZATION ====================
+
+// Plot Order Blocks - no text, only border
+if show_ob
+    if bullish_ob_detected
+        box.new(bullish_ob_bar, bullish_ob_top, bar_index + 20, bullish_ob_bottom, border_color=color.new(#00ff41, 0), bgcolor=color.new(#00ff41, 96), border_width=1)
+    
+    if bearish_ob_detected
+        box.new(bearish_ob_bar, bearish_ob_top, bar_index + 20, bearish_ob_bottom, border_color=color.new(#ff6b6b, 0), bgcolor=color.new(#ff6b6b, 96), border_width=1)
+
+// Plot FVG with vibrant colors
+if show_fvg
+    if bullish_fvg
+        box.new(bar_index[2], bull_fvg_top, bar_index + 10, bull_fvg_bottom, border_color=color.new(#6BCB77, 30), bgcolor=color.new(#6BCB77, 95), border_width=1, border_style=line.style_dashed)
+    
+    if bearish_fvg
+        box.new(bar_index[2], bear_fvg_top, bar_index + 10, bear_fvg_bottom, border_color=color.new(#FF6F61, 30), bgcolor=color.new(#FF6F61, 95), border_width=1, border_style=line.style_dashed)
+
+// Plot Liquidity Zones - lines only, no labels
+if show_liquidity
+    if equal_highs and array.size(high_bars) >= 3
+        line.new(array.get(high_bars, array.size(high_bars)-3), array.get(highs, array.size(highs)-3), bar_index, array.get(highs, array.size(highs)-1), color=color.new(#ffd93d, 20), style=line.style_dashed, width=2)
+    
+    if equal_lows and array.size(low_bars) >= 3
+        line.new(array.get(low_bars, array.size(low_bars)-3), array.get(lows, array.size(lows)-3), bar_index, array.get(lows, array.size(lows)-1), color=color.new(#ffd93d, 20), style=line.style_dashed, width=2)
+
+// Plot Breaker Blocks - hidden, shown in panel only
+// if show_breakers
+//     if bullish_breaker
+//         label.new(bar_index, low, "BRK", color=color.new(#00ff41, 20), textcolor=color.new(color.white, 0), style=label.style_label_up, size=size.tiny)
+//     
+//     if bearish_breaker
+//         label.new(bar_index, high, "BRK", color=color.new(#ff6b6b, 20), textcolor=color.new(color.white, 0), style=label.style_label_down, size=size.tiny)
+
+// Plot Signals - auto size, adapts to chart zoom
+plotshape(buy_signal, "BUY", shape.triangleup, location.belowbar, color.new(#00ff41, 0), size=size.small)
+plotshape(sell_signal, "SELL", shape.triangledown, location.abovebar, color.new(#ff6b6b, 0), size=size.small)
+
+// Plot Swing Points - hidden for cleaner chart
+// plotshape(swing_high, "Swing High", shape.xcross, location.abovebar, color.new(#ff6b6b, 70), size=size.tiny)
+// plotshape(swing_low, "Swing Low", shape.xcross, location.belowbar, color.new(#00ff41, 70), size=size.tiny)
+
+// ==================== INFO PANEL ====================
+
+var table smc_panel = table.new(position.top_right, 2, 6, bgcolor=color.new(#1a1a2e, 10), border_width=2, border_color=color.new(#16213e, 50), frame_width=2, frame_color=color.new(#0f3460, 50))
+
+if barstate.islast
+    // Header with gradient effect
+    table.cell(smc_panel, 0, 0, "📊 SMC ANALYSIS", bgcolor=color.new(#0f3460, 20), text_color=color.new(color.white, 0), text_size=size.normal)
+    table.cell(smc_panel, 1, 0, str.tostring(smc_score) + "/6", bgcolor=color.new(#0f3460, 20), text_color=smc_score >= 4 ? color.new(#00ff41, 0) : color.new(#ff6b6b, 0), text_size=size.large)
+    
+    // Market Structure with emoji
+    table.cell(smc_panel, 0, 1, "📈 Structure", text_color=color.new(color.silver, 0), text_size=size.small)
+    struct_color = str.contains(market_structure, "BULLISH") ? color.new(#00ff41, 0) : str.contains(market_structure, "BEARISH") ? color.new(#ff6b6b, 0) : color.new(color.orange, 0)
+    struct_text = str.contains(market_structure, "BULLISH") ? "🟢 BULL" : str.contains(market_structure, "BEARISH") ? "🔴 BEAR" : "🟡 RANGE"
+    table.cell(smc_panel, 1, 1, struct_text, text_color=struct_color, text_size=size.normal)
+    
+    // Order Blocks
+    ob_emoji = bullish_ob_detected ? "🟩" : bearish_ob_detected ? "🟥" : "⬜"
+    ob_text = bullish_ob_detected ? "BULL OB" : bearish_ob_detected ? "BEAR OB" : "None"
+    ob_color = bullish_ob_detected ? color.new(#00ff41, 0) : bearish_ob_detected ? color.new(#ff6b6b, 0) : color.new(color.gray, 0)
+    table.cell(smc_panel, 0, 2, "📦 Order Block", text_color=color.new(color.silver, 0), text_size=size.small)
+    table.cell(smc_panel, 1, 2, ob_emoji + " " + ob_text, text_color=ob_color, text_size=size.small)
+    
+    // FVG
+    fvg_emoji = bullish_fvg ? "💚" : bearish_fvg ? "❤️" : "🤍"
+    fvg_text = bullish_fvg ? "BULL FVG" : bearish_fvg ? "BEAR FVG" : "None"
+    fvg_color = bullish_fvg ? color.new(#00ff41, 0) : bearish_fvg ? color.new(#ff6b6b, 0) : color.new(color.gray, 0)
+    table.cell(smc_panel, 0, 3, "🔲 Fair Value Gap", text_color=color.new(color.silver, 0), text_size=size.small)
+    table.cell(smc_panel, 1, 3, fvg_emoji + " " + fvg_text, text_color=fvg_color, text_size=size.small)
+    
+    // Liquidity
+    liq_emoji = equal_highs ? "🔺" : equal_lows ? "🔻" : "➖"
+    liq_text = equal_highs ? "EQH ⚠️" : equal_lows ? "EQL ⚠️" : "None"
+    liq_color = equal_highs or equal_lows ? color.new(#ffd93d, 0) : color.new(color.gray, 0)
+    table.cell(smc_panel, 0, 4, "💧 Liquidity", text_color=color.new(color.silver, 0), text_size=size.small)
+    table.cell(smc_panel, 1, 4, liq_emoji + " " + liq_text, text_color=liq_color, text_size=size.small)
+    
+    // Sweep
+    sweep_emoji = liquidity_sweep_high ? "⬆️" : liquidity_sweep_low ? "⬇️" : "➖"
+    sweep_text = liquidity_sweep_high ? "HIGH SWEPT" : liquidity_sweep_low ? "LOW SWEPT" : "None"
+    sweep_color = liquidity_sweep_high ? color.new(#ff6b6b, 0) : liquidity_sweep_low ? color.new(#00ff41, 0) : color.new(color.gray, 0)
+    table.cell(smc_panel, 0, 5, "🌊 Sweep", text_color=color.new(color.silver, 0), text_size=size.small)
+    table.cell(smc_panel, 1, 5, sweep_emoji + " " + sweep_text, text_color=sweep_color, text_size=size.small)

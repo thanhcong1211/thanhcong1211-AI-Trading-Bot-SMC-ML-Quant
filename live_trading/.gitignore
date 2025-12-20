@@ -1,0 +1,52 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+
+# Logs
+logs/
+*.log
+
+# AI Models
+models/*.pkl
+models/*.json
+
+# MT5 Data
+Files/
+*.ex5
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Sensitive
+config_local.py
+*.env
+credentials.txt
+
+# Test files
+test_*.py
+*_test.py
+
+# Backtest results
+*.csv
+*.json
+backtest_results/
+backtests/
+
+# Temporary files
+*.tmp
+*.bak
+*~
