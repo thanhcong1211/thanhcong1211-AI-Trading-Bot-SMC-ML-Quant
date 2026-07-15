@@ -21,6 +21,15 @@ const config: Config = {
       boxShadow: {
         'glow-in': '0 0 8px rgba(0, 255, 65, 0.45)',
         'glow-out': '0 0 8px rgba(255, 51, 51, 0.45)'
+      },
+      keyframes: {
+        ticker: {
+          '0%': { transform: 'translateX(0)' },
+          '100%': { transform: 'translateX(-50%)' }
+        }
+      },
+      animation: {
+        ticker: 'ticker 24s linear infinite'
       }
     }
   },
